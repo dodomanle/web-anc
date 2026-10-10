@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#111827">
+<title>웹 ANC 실험실</title>
+<style>
+  :root { color-scheme: dark; --bg:#111827; --panel:#1f2937; --muted:#9ca3af; --accent:#60a5fa; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,"Segoe UI",sans-serif; background:linear-gradient(160deg,#111827,#0b1220); color:#f9fafb; min-height:100vh; }
+  main { width:min(680px,100%); margin:auto; padding:24px 18px 40px; }
+  h1 { font-size:1.65rem; margin:0 0 8px; }
+  .sub { color:var(--muted); line-height:1.55; margin:0 0 22px; }
+  .card { background:rgba(31,41,55,.92); border:1px solid #374151; border-radius:18px; padding:18px; margin:14px 0; }
+  .status { display:flex; align-items:center; gap:10px; font-weight:650; }
+  .dot { width:10px;height:10px;border-radius:50%;background:#6b7280; }
+  .dot.on { background:#34d399; box-shadow:0 0 12px #34d39988; }
+  button { border:0; border-radius:12px; padding:14px 16px; font-size:1rem; font-weight:700; cursor:pointer; width:100%; margin-top:12px; }
+  #start { background:var(--accent); color:#071426; }
+  #stop { background:#374151; color:#fff; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  label { display:flex; justify-content:space-between; gap:12px; margin:12px 0 8px; }
+  input[type=range] { width:100%; accent-color:var(--accent); }
+  .small { font-size:.9rem; color:var(--muted); line-height:1.55; }
+  .warning { border-color:#92400e; background:#42200666; }
+  .warning strong { color:#fbbf24; }
+  .meter { height:8px; border-radius:8px; background:#374151; overflow:hidden; margin-top:12px; }
+  #level { height:100%; width:0%; background:#60a5fa; transition:width .08s linear; }
+  code { color:#bfdbfe; }
+</style>
+</head>
+<body>
+<main>
+  <h1>🎧 웹 ANC 실험실</h1>
+  <p class="sub">마이크 입력을 반전해 이어폰으로 출력하는 간단한 오디오 실험입니다. 실제 능동 소음 제거(ANC) 제품과 같은 성능은 아닙니다.</p>
+
+  <section class="card">
+    <div class="status"><span id="dot" class="dot"></span><span id="status">꺼짐 — 시작을 누르면 마이크 권한을 요청합니다.</span></div>
+    <button id="start">마이크 실험 시작</button>
+    <button id="stop" disabled>중지</button>
+    <div class="meter"><div id="level"></div></div>
+    <p class="small">입력 레벨(대략적인 표시)</p>
+  </section>
+
+  <section class="card">
+    <label for="gain"><span>반전 신호 크기</span><strong id="gainText">15%</strong></label>
+    <input id="gain" type="range" min="0" max="40" value="15" step="1">
+    <p class="small">처음에는 낮은 값으로 시작하세요. 이 값은 마이크 소리를 반전해 얼마나 크게 출력할지 정합니다.</p>
+  </section>
+
+  <section class="card warning">
+    <strong>안전 및 한계</strong>
+    <p class="small">반드시 이어폰/헤드폰을 낮은 음량으로 사용하고, 스피커로 테스트하지 마세요. 스피커 출력이 마이크로 다시 들어가면 하울링이 생길 수 있습니다.</p>
+    <p class="small">브라우저의 오디오 지연 때문에 반대 파형이 원래 소음과 제때 만나지 않아 주변 소음을 제대로 지우지 못하거나 오히려 더 크게 들릴 수 있습니다. 웹페이지는 마이크 권한이 필요하며, 모바일에서는 보통 HTTPS 주소에서 열어야 합니다.</p>
+  </section>
+</main>
+<script>
+(() => {
+  const startBtn = document.getElementById('start');
+  const stopBtn = document.getElementById('stop');
+  const status = document.getElementById('status');
+  const dot = document.getElementById('dot');
+  const gainSlider = document.getElementById('gain');
+  const gainText = document.getElementById('gainText');
+  const levelBar = document.getElementById('level');
+  let stream = null, ctx = null, source = null, gainNode = null, analyser = null, raf = null;
+
+  gainSlider.addEventListener('input', () => {
+    gainText.textContent = gainSlider.value + '%';
+    if (gainNode) gainNode.gain.setTargetAtTime(-Number(gainSlider.value)/100, ctx.currentTime, 0.02);
+  });
+
+  function cleanup() {
+    if (raf) cancelAnimationFrame(raf);
+    raf = null;
+    if (source) { try { source.disconnect(); } catch {} }
+    if (gainNode) { try { gainNode.disconnect(); } catch {} }
+    if (analyser) { try { analyser.disconnect(); } catch {} }
+    if (ctx) { ctx.close().catch(() => {}); }
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    stream = ctx = source = gainNode = analyser = null;
+    dot.classList.remove('on');
+    status.textContent = '꺼짐';
+    startBtn.disabled = false;
+    stopBtn.disabled = true;
+    levelBar.style.width = '0%';
+  }
+
+  function meterLoop() {
+    if (!analyser) return;
+    const data = new Uint8Array(analyser.fftSize);
+    analyser.getByteTimeDomainData(data);
+    let sum = 0;
+    for (const v of data) { const x = (v - 128) / 128; sum += x*x; }
+    const rms = Math.sqrt(sum/data.length);
+    levelBar.style.width = Math.min(100, rms*260) + '%';
+    raf = requestAnimationFrame(meterLoop);
+  }
+
+  startBtn.addEventListener('click', async () => {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      status.textContent = '이 브라우저에서 마이크 접근을 지원하지 않습니다. HTTPS 주소로 열어보세요.';
+      return;
+    }
+    startBtn.disabled = true;
+    status.textContent = '마이크 권한을 기다리는 중…';
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+        video: false
+      });
+      ctx = new (window.AudioContext || window.webkitAudioContext)({ latencyHint: 'interactive' });
+      await ctx.resume();
+      source = ctx.createMediaStreamSource(stream);
+      gainNode = ctx.createGain();
+      gainNode.gain.value = -Number(gainSlider.value)/100;
+      analyser = ctx.createAnalyser();
+      analyser.fftSize = 1024;
+      source.connect(analyser);
+      source.connect(gainNode);
+      gainNode.connect(ctx.destination);
+      dot.classList.add('on');
+      status.textContent = '실행 중 — 반전된 마이크 소리를 출력하고 있습니다.';
+      stopBtn.disabled = false;
+      meterLoop();
+    } catch (err) {
+      cleanup();
+      status.textContent = '시작 실패: 마이크 권한을 허용하고 다른 앱이 마이크를 독점 중인지 확인하세요.';
+      console.error(err);
+    }
+  });
+  stopBtn.addEventListener('click', cleanup);
+  window.addEventListener('pagehide', cleanup);
+})();
+</script>
+</body>
+</html>
